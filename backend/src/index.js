@@ -1,7 +1,8 @@
 const express = require('express');
 const cors = require('cors');
 const salesRoutes = require('./routes/salesRoutes');
-const { initDb } = require('./utils/db');
+const { initDb, db } = require('./utils/db');
+const importCsv = require('./utils/seed');
 
 const app = express();
 const PORT = process.env.PORT || 5001;
@@ -9,8 +10,20 @@ const PORT = process.env.PORT || 5001;
 app.use(cors());
 app.use(express.json());
 
-// Initialize DB
+// Initialize DB and Seed if empty
 initDb();
+
+db.get("SELECT COUNT(*) as count FROM sales", (err, row) => {
+    if (err) {
+        // Table might not exist yet, initDb is async in structure but run is serialized
+        console.log("Checking DB status...");
+    } else if (row && row.count === 0) {
+        console.log("Database is empty. Starting seed process...");
+        importCsv();
+    } else {
+        console.log(`Database has ${row.count} records. Skipping seed.`);
+    }
+});
 
 // Routes
 app.use('/api/sales', salesRoutes);

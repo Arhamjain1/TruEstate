@@ -1,23 +1,51 @@
 const fs = require('fs');
 const path = require('path');
 const csv = require('csv-parser');
+const AdmZip = require('adm-zip');
 const { db, initDb } = require('./db');
 
-const csvFilePath = path.resolve(__dirname, '../../../truestate_assignment_dataset.csv');
+const zipFilePath = path.resolve(__dirname, '../../dataset.zip');
+const csvFileName = 'truestate_assignment_dataset.csv';
 
 const importCsv = () => {
   initDb();
 
   const results = [];
   
-  console.log(`Reading CSV from ${csvFilePath}...`);
+  console.log(`Checking for dataset...`);
 
-  if (!fs.existsSync(csvFilePath)) {
-    console.error(`File not found: ${csvFilePath}`);
-    return;
+  let readStream;
+
+  if (fs.existsSync(zipFilePath)) {
+      console.log(`Found zip file at ${zipFilePath}. Extracting...`);
+      const zip = new AdmZip(zipFilePath);
+      const zipEntries = zip.getEntries();
+      const csvEntry = zipEntries.find(entry => entry.entryName === csvFileName || entry.entryName.endsWith('.csv'));
+      
+      if (!csvEntry) {
+          console.error('CSV file not found in zip archive.');
+          return;
+      }
+      console.log(`Extracting ${csvEntry.entryName}...`);
+      // Extract to buffer and create stream
+      const buffer = csvEntry.getData();
+      const { Readable } = require('stream');
+      readStream = Readable.from(buffer);
+  } else {
+      // Fallback to local CSV if zip doesn't exist (dev environment)
+      const localCsvPath = path.resolve(__dirname, '../../../truestate_assignment_dataset.csv');
+      if (fs.existsSync(localCsvPath)) {
+          console.log(`Found local CSV at ${localCsvPath}`);
+          readStream = fs.createReadStream(localCsvPath);
+      } else {
+          console.error(`Dataset not found. Looked for ${zipFilePath} and ${localCsvPath}`);
+          return;
+      }
   }
 
-  fs.createReadStream(csvFilePath)
+  console.log('Parsing CSV...');
+
+  readStream
     .pipe(csv())
     .on('data', (data) => results.push(data))
     .on('end', () => {
@@ -84,4 +112,8 @@ const importCsv = () => {
     });
 };
 
-importCsv();
+module.exports = importCsv;
+
+if (require.main === module) {
+    importCsv();
+}
