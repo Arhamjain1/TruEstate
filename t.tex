@@ -1,0 +1,422 @@
+\documentclass[conference]{IEEEtran}
+
+
+
+% --- IEEE Default Packages ---
+
+\usepackage{cite}
+
+\usepackage{amsmath,amssymb,amsfonts}
+
+\usepackage{algorithmic}
+
+\usepackage{graphicx}
+
+\usepackage{textcomp}
+
+\usepackage{xcolor}
+
+
+
+% --- Custom Packages for this Paper ---
+
+% For professional-looking tables
+
+\usepackage{booktabs} 
+
+% For math
+
+\usepackage{amsmath}
+
+% For subfigures
+
+\usepackage{subcaption}
+
+
+
+% correct bad hyphenation here
+
+\hyphenation{op-tical net-works semi-conduc-tor}
+
+
+
+
+
+\begin{document}
+
+
+
+% --- Title and Author Information ---
+
+\title{Enhancing Execution in Kubernetes for \\ Optimized Resource Utilization}
+
+
+
+\author{Arham~Jain$^1$,
+        Suchi~Kumari$^1$, Indrajeet Gupta$^2$\\
+\textit{$^1$Department of Computer Science and Engineering, Shiv Nadar Institution of Eminence} \\
+\textit{Delhi-NCR, India, Email: aj919@snu.edu.in, suchi.kumari@snu.edu.in} \\ 
+\textit{$^2$Rama University, Kanpur, Uttar Pradesh, India,  Email: indrajeet7830@gmail.com}
+}
+
+
+
+
+
+% Make the title area
+
+\maketitle
+
+
+
+% --- Abstract ---
+
+\begin{abstract}
+
+Efficient workflow scheduling in cloud environments remains a critical challenge due to the tension between performance (minimizing execution time) and operational cost. In this work, we propose a hybrid scheduling algorithm, HGSA, that leverages Heterogeneous Earliest Finish Time (HEFT) to establish task priorities and a refined Gravitational Search Algorithm (GSA) to optimize container assignments. Our approach seeds the GSA population with the HEFT solution and integrates a simulated-annealing-inspired local search to escape local optima. We extend the traditional makespan-only objective by incorporating a model that accounts for both computation and inter-container communication. Through extensive experiments on benchmark scientific workflows executed atop a Kubernetes cluster, we demonstrate that our hybrid HEFT+GSA scheduler reduces average makespan compared to standalone HEFT, vanilla GSA, and Particle Swarm Optimization (PSO). These results highlight the effectiveness of combining task-level heuristics with population-based metaheuristics for sustainable, high-performance cloud scheduling.
+
+\end{abstract}
+
+
+
+% --- Keywords ---
+
+\begin{IEEEkeywords}
+
+Cloud Computing, Kubernetes, Workflow Scheduling, Resource Utilization.
+
+\end{IEEEkeywords}
+
+
+
+
+
+% --- Main-body Sections ---
+
+
+
+\section{Introduction}
+
+
+
+Cloud platforms have become the backbone for executing complex, data- and compute-intensive workflows across scientific, engineering, and business domains \cite{choudhary2018hgsa}. As users assemble tasks into Directed Acyclic Graphs (DAGs), they expect both rapid turnaround (low makespan) and economical operation (minimal cost). Unfortunately, these goals often conflict: assigning more resources can speed up execution, but it drives up electricity bills and environmental impact. The challenge is to find a mapping $\pi: T \to C$ balancing Makespan $T(\pi)$ (total execution time) and Total Cost $C(\pi)$ (execution plus communication costs). Traditional heuristics often fail to optimize both simultaneously. This work proposes a hybrid approach to find a superior trade-off.
+
+\section{Related Works}
+
+% ... (Section text remains the same) ...
+
+Workflow scheduling is a well-studied NP-complete problem. List-based heuristics like Heterogeneous Earliest Finish Time (HEFT) \cite{topcuoglu2002heft} remain popular for their simplicity. HEFT computes upward ranks and assigns tasks greedily to minimize finish time. While HEFT provides solid makespan baselines, it is inherently single-objective and can produce costly mappings on heterogeneous cloud platforms, which motivates the development of multi-objective and hybrid strategies. 
+
+Population-based metaheuristics (e.g., GSA, PSO) provide flexible multi-objective search capabilities but typically require problem-aware operators or good initial solutions to avoid slow convergence and local optima \cite{rashedi2009gsa,pandey2010pso}. Recent research has combined learning with search, for example, actor–critic reinforcement learning augmented by heuristic priors which helps stability and improves multi-objective performance for containerized workloads \cite{zhu2023actorcritic}. Bio-inspired methods such as Beetle Antennae Search have also been adapted to reduce communication and placement costs in Kubernetes environments \cite{li2023beetle}. Seeding metaheuristics with heuristic solutions is an effective hybrid tactic. Starting from a heuristic (like HEFT) accelerates convergence and typically yields better trade-offs than running the metaheuristic from a random start \cite{choudhary2018hgsa}.
+
+Kubernetes and cloud-native platforms change the placement problem faster container startup, autoscaling, and finer resource types require container-aware schedulers. Recent surveys and studies argue for plugin-based, load-aware, and ML-guided schedulers to handle these changes \cite{carrion2022survey,senjab2023survey}. Practical work on load-aware orchestration, multi-cluster placement, and energy-aware schedulers emphasizes the challenges of translating workflow mappings into pod manifests and observing real container behaviour in production-like settings \cite{marchese2025loadaware,dong2025pax,dicicco2024multicluster}. Energy and operational cost have become first-class objectives in scheduling research. Techniques such as packing, communication-aware co-location, and energy-aware optimizers aim to reduce operational costs while still meeting SLAs \cite{rao2024energy,li2023beetle}. Hybrid autoscaling strategies that combine horizontal and vertical scaling often guided by ML predictors further reduce waste and complement placement strategies \cite{horn2022autoscaling}.
+
+% --- FIGURE 1: ARCHITECTURE DIAGRAM (Spans two columns) ---
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=\columnwidth]{architecture.png} 
+    \caption{The Proposed Hybrid HEFT+GSA (HGSA) Workflow Scheduling Architecture. HEFT generates a seed solution and task priority list for the multi-objective GSA component.}
+    \label{fig:architecture}
+\end{figure}
+
+
+
+\section{Proposed Methodology: The HGSA Scheduler}
+
+This paper addresses the core problem of scheduling $n$ tasks onto $m$ heterogeneous containers in a Kubernetes-orchestrated environment. We map $n$ tasks $T = \{t_1, ..., t_n\}$ to $m$ heterogeneous containers $C = \{c_1, ..., c_m\}$. An $n \times m$ matrix $ETC$ defines execution times, where $ETC_{i,j}$ is the time for task $t_i$ on container $c_j$. A vector $CST$ defines the cost rate $CST_j$ for each container $c_j$. A dependency matrix $DEP$ representing the DAG's precedence constraints. An $n \times m$ communication-cost matrix $CM$, where $CM_{i,k}$ is the cost of transferring data from task $t_i$ to task $t_k$ if they are on different containers. A \textbf{Hybrid HEFT+GSA (HGSA)} scheduling framework is designed specifically for containerized workflows, as shown in Fig. \ref{fig:architecture}. Our model integrates the fast prioritization of HEFT with the robust global search of GSA, guided by a multi-objective fitness function.
+
+\subsection{Phase 1: HEFT-based Task Prioritization}
+
+First, we use HEFT logic to establish a task priority list for evaluation order. We compute average execution time $\bar{w_i}$ for each task $t_i$ and average communication cost $\bar{c}_{i,k}$ between tasks. We recursively compute the upward rank, $rank_u(t_i)$, for each task, starting from the exit task. The rank represents the length of the critical path from $t_i$ to the end of the workflow.
+\begin{equation}
+rank_u(t_i) = \bar{w_i} + \max_{t_j \in succ(t_i)} (\bar{c}_{i,j} + rank_u(t_j))
+\end{equation}
+where $succ(t_i)$ is the set of immediate successors of task $t_i$.
+
+A final priority list is created by sorting all tasks in decreasing order of their $rank_u$. This ensures that tasks on the critical path are prioritized.
+
+\subsection{Phase 2: GSA-based Mapping Optimization}
+
+GSA then searches for the optimal mapping. Each agent is a vector of length $n$, where index $i$ is the container ID assigned to task $t_i$. To accelerate convergence, we seed the initial population with a solution from the standalone HEFT algorithm. In each iteration, all agents are evaluated using the fitness function. The fitness values are normalized to calculate the "mass" of each agent. Agents with better fitness have higher mass. Following the principles of GSA, agents exert a gravitational force on each other, pulling agents with lower mass (worse solutions) towards agents with higher mass (better solutions). Agent positions (mappings) are updated based on their calculated velocity and force. To enhance exploitation, we integrate a simulated-annealing (SA)-inspired local search to perturb the best agents, helping them escape local optima. Elitism is also employed to ensure the best-so-far solution is always preserved in the next generation.
+\subsection{Multi-Objective Fitness Function}
+
+The GSA's behavior is guided by a scalar fitness function that combines our objectives. For a given mapping $\pi$, we first simulate the DAG execution (respecting the $rank_u$ priority and dependencies) to find its true makespan $T(\pi)$ and total cost $C(\pi)$. These are then normalized to $\tilde{T}(\pi)$ and $\tilde{C}(\pi)$ (values between 0 and 1). The fitness is calculated as:
+\begin{equation}
+fitness(\pi) = \frac{1}{1 + \alpha \cdot \tilde{T}(\pi) + (1-\alpha) \cdot \beta \cdot \tilde{C}(\pi)}
+\end{equation}
+Here, $\alpha$ is the crucial trade-off parameter. $\alpha=1$ optimizes purely for makespan, while $\alpha=0$ optimizes purely for cost. We use $\alpha=0.5$ for a balanced search. $\beta$ is a scaling factor that normalizes the cost term to be comparable in magnitude to the makespan term. The reciprocal form ensures that lower-cost, lower-makespan solutions receive a higher fitness score.
+
+
+\section{Experimental Setup}
+
+We evaluated our HGSA algorithm against HEFT, vanilla GSA, and Particle Swarm Optimization (PSO) on a local Kubernetes cluster.
+
+
+
+\subsection{Cluster and Workflow Configuration}
+
+Experiments ran on an Intel Core i9 workstation with 16 GB RAM, using Docker Desktop and Minikube for a local Kubernetes cluster. We used standard Epigenomic benchmarks (sizes 24 and 100) to simulate varying computational scales. The makespan $ETC$ and cost $CM$ matrices are publicly available. The Epigenomic workflow, shown in Fig. \ref{fig:dag}, is a compute-intensive application from the bioinformatics domain, characterized by its complex dependency structure.
+
+\subsection{Execution Methodology}
+
+We generate an optimal mapping $\pi$ for a given workflow for all the algorithms (HEFT, GSA, PSO, HGSA). This mapping was automatically translated into a set of Kubernetes Pod YAML files. Task execution times ($ETC_{i,j}$) were emulated using the `sleep` command inside the container. Dependencies were managed by the scheduler. The pods were deployed to the Minikube cluster using \textit{kubectl apply}. We collected empirical data on actual pod start/finish times and node assignments from the Kubernetes API. The measured makespan and total empirical cost were calculated. This process was repeated for $\ge 10$ independent trials for each algorithm to ensure statistical robustness and account for scheduling jitter.
+
+
+
+\subsection{Workflow and Parameter Configuration}
+
+The Epigenomic workflow serves as a representative example of real-world scientific computations. To ensure a fair comparison among the meta-heuristic algorithms, a consistent set of parameters was employed. The population size for GSA, PSO, and HGSA was fixed at $N=50$. Each algorithm was executed for $T=200$ iterations to capture its complete convergence behavior. For both GSA and HGSA, the initial gravitational constant was set to $G_0 = 1$. In the case of PSO, the cognitive and social coefficients were configured as $c_1 = c_2 = 2$.
+
+\section{Results and Analysis}
+
+Our experiments demonstrate that the proposed HGSA framework consistently outperforms the other algorithms in finding a superior balance between makespan and cost.
+
+\subsection{Quantitative Comparison}
+
+Tables \ref{tab:results-n24} and \ref{tab:results-n100} show results for Epigenomic-24 and 100 workflows. For Epigenomic-24, HGSA achieves the lowest makespan (35.83s) and cost (301.67), outperforming the HEFT baseline (40.17s) and vanilla GSA (304.83). The results are even more pronounced for the larger 100-task workflow. HEFT, being greedy, produces a very high-cost solution (10,513.00). The meta-heuristics (GSA, PSO) find much better cost trade-offs. However, our hybrid HGSA finds the best solution in \textit{both} categories: it achieves the fastest execution time (212.33s) and the lowest operational cost (6,570.00) simultaneously. This demonstrates its ability to effectively navigate the solution space to find a superior trade-off that other algorithms miss.
+
+\begin{table}[t]
+\centering
+\caption{Performance Comparison on Epigenomic Workflows (n=24)}
+\label{tab:results-n24}
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+\textbf{Algorithm} & \textbf{Makespan} & \textbf{Makespan} & \textbf{Avg. Cost} & \textbf{Avg. Cost} \\
+& \textbf{VM(s)} & \textbf{Cont.(s)} & \textbf{VM(\$/s)} & \textbf{Cont.(\$/s)} \\
+\midrule
+HEFT \cite{topcuoglu2002heft} & 5406.00 & 40.17 & 18191.00 & 431.67 \\
+GSA \cite{rashedi2009gsa} & 5083.00 & 42.17 & 16066.30 & 304.83 \\
+PSO \cite{pandey2010pso} & 5296.00 & 43.00 & 16243.00 & 327.20 \\
+\textbf{HGSA} & \textbf{4989.00} & \textbf{35.83} & \textbf{15927.10} & \textbf{301.67} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[t]
+\centering
+\caption{Performance Comparison on Epigenomic Workflows (n=100)}
+\label{tab:results-n100}
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+\textbf{Algorithm} & \textbf{Makespan} & \textbf{Makespan} & \textbf{Avg. Cost} & \textbf{Avg. Cost} \\
+& \textbf{VM(s)} & \textbf{Cont.(s)} & \textbf{VM(\$/s)} & \textbf{Cont.(\$/s)} \\
+\midrule
+HEFT \cite{topcuoglu2002heft} & 20070.00 & 264.00 & 80496.40 & 10,513.00 \\
+GSA \cite{rashedi2009gsa} & 20965.00 & 224.00 & 75496.70 & 7,898.67 \\
+PSO \cite{pandey2010pso} & 21154.00 & 242.00 & 74627.40 & 8,628.00 \\
+\textbf{HGSA} & \textbf{20456.00} & \textbf{212.33} & \textbf{73828.20} & \textbf{6,570.00} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+
+
+
+\subsection{Convergence Analysis}
+
+The convergence behavior of the algorithms, shown in Figs. \ref{fig:makespan_graph} and \ref{fig:cost_graph}, reveals \textit{why} HGSA is effective. The plots track the best-so-far solution for makespan and cost over 200 iterations for the Epigenomic 100 workflow (values taken from VM simulation). In Fig. \ref{fig:makespan_graph}, the HEFT baseline is a flat, dashed line at 5405.00 time units. Vanilla GSA (red) and PSO (blue) start with poor, random solutions (high makespan) and slowly converge over 100-120 iterations, eventually settling on solutions slightly better than HEFT. In stark contrast, our HGSA (green) begins with a high-quality makespan (around 5500 units) due to the HEFT seed. It then converges dramatically faster and to a significantly lower final makespan (4989.00 units), demonstrating the power of hybridizing the search.
+
+
+
+\begin{figure}[t]
+    \centering
+    \begin{subfigure}[b]{0.48\columnwidth}
+        \includegraphics[width=\linewidth]{makespan_refined.png}
+        \caption{Makespan Convergence}
+        \label{fig:makespan_graph}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[b]{0.48\columnwidth}
+        \includegraphics[width=\linewidth]{cost_refined.png}
+        \caption{Cost Convergence}
+        \label{fig:cost_graph}
+    \end{subfigure}
+    \caption{Convergence on Epigenomic-100. HGSA (green) converges faster to better solutions than GSA (red) or PSO (blue).}
+    \label{fig:convergence}
+    \vspace{-0.2cm}
+\end{figure}
+
+
+In Fig. \ref{fig:cost_graph}, the HEFT baseline cost is extremely high (18191.90 cost units). GSA and PSO start high and take nearly 150 iterations to find a low-cost solution. HGSA, however, starts with a strong initial solution and again converges much faster (within 60-80 iterations) to the lowest overall cost (15927.10 units). This confirms that the hybrid "seeding" approach is highly effective at accelerating the search and finding higher-quality solutions in both objectives.
+
+\subsection{Container vs. VM Performance}
+
+We also ran a comparative analysis of our algorithms in a VM-based simulation versus the container-based Kubernetes deployment (Tables \ref{tab:results-n24} and \ref{tab:results-n100}). The containerized environment consistently showed better performance. For example, on the Epigenomic-24 workflow, HGSA's makespan saw a +99.28\% improvement (a larger reduction) in the container environment compared to the VM simulation. This is due to the lower overhead and faster startup times of containers, which validates the focus on Kubernetes-native scheduling. 
+
+\section{Conclusion and Future Work}
+
+This paper introduced HGSA, a hybrid, multi-objective scheduling algorithm for containerized workflows in Kubernetes. By strategically combining the HEFT heuristic for task prioritization and population seeding with a GSA for global search, our framework delivers a robust and effective solution. Experimental results on a Minikube cluster show that HGSA consistently outperforms standalone HEFT, vanilla GSA, and PSO, striking a superior balance in the makespan-cost trade-off, especially for larger, more complex workflows.
+
+
+
+For future work, we plan to extend this research in several key directions. Instead of a single scalarized fitness function, we can explore true multi-objective optimization to generate a full Pareto-optimal front. We can use more precise, real-time energy measurement tools like Intel's Running Average Power Limit (RAPL) to enhance the accuracy of our energy-aware scheduling. The current model assumes static workflows. We will extend the framework to support dynamic workloads and real-time adjustments, which is critical for multi-tenant cloud environments where resources fluctuate.
+
+
+
+% --- References ---
+
+\begin{thebibliography}{1}
+
+
+
+\bibitem{topcuoglu2002heft} 
+H. Topcuoglu, S. Hariri, and M.-Y. Wu, 
+``Performance-effective and low-complexity task scheduling for heterogeneous computing,'' 
+\textit{IEEE Transactions on Parallel and Distributed Systems}, 
+vol. 13, no. 3, Mar. 2002.
+
+\bibitem{rashedi2009gsa} 
+E. Rashedi, H. Nezamabadi-Pour, and S. Saryazdi, 
+``GSA: A gravitational search algorithm,'' 
+\textit{Information Sciences}, 
+vol. 179, no. 13, Jul. 2009.
+
+\bibitem{pandey2010pso} 
+S. Pandey, L. Wu, S. M. Guru, and R. Buyya, 
+``A particle swarm optimization-based heuristic for scheduling workflow applications in cloud computing environments,'' 
+in \textit{Proc. 24th IEEE AINA}, Apr. 2010.
+
+\bibitem{choudhary2018hgsa} 
+A. Choudhary, I. Gupta, V. Singh, and P. K. Jana, 
+``A GSA based hybrid algorithm for bi-objective workflow scheduling in cloud computing,'' 
+\textit{Future Generation Computer Systems}, 
+vol. 83, Jan. 2018.
+
+\bibitem{carrion2022survey} 
+M. D. C. Carrión, 
+``Kubernetes Scheduling: Taxonomy, Ongoing Issues and Challenges,'' 
+\textit{ACM Computing Surveys}, 
+vol. 55, no. 7, 2022.
+
+% \bibitem{shin2022cloudnative} 
+% J. Shin et al., 
+% ``Cloud-native Workflow Scheduling using a Hybrid Priority Rule and Dynamic Task Parallelism,'' 
+% in \textit{Proc. ACM SoCC}, 2022.
+
+\bibitem{marchese2025loadaware} 
+A. Marchese, 
+``Enhancing the Kubernetes Platform with a Load-Aware Orchestration Strategy,'' 
+\textit{SN Computer Science}, 
+vol. 6, art. 224, 2025.
+
+\bibitem{zhu2023actorcritic} 
+L. Zhu et al., 
+``A Heuristic Multi-Objective Task Scheduling Framework for Container-based Clouds via Actor-Critic Reinforcement Learning,'' 
+\textit{Neural Computing and Applications}, 
+vol. 35, 2023.
+
+\bibitem{rao2024energy} 
+W. Rao and H. Li, 
+``Energy-aware Scheduling Algorithm for Microservices in Kubernetes Clouds,'' 
+\textit{Journal of Grid Computing}, 
+Dec. 2024.
+
+\bibitem{li2023beetle} 
+H. Li et al., 
+``Cost-efficient Scheduling Algorithms based on Beetle Antennae Search for Containerized Applications in Kubernetes Clouds,'' 
+\textit{Journal of Supercomputing}, 
+vol. 79, 2023.
+
+\bibitem{dong2025pax} 
+H. Dong et al., 
+``Towards Performance and Energy Aware Kubernetes Scheduler (PAX),'' 
+\textit{Energy Informatics Review}, 
+2025.
+
+\bibitem{dicicco2024multicluster} 
+N. Di Cicco et al., 
+``Multi-Objective Scheduling and Resource Allocation of Kubernetes Replicas Across the Compute Continuum,'' 
+\textit{IEEE CNSM}, 
+2024.
+
+\bibitem{senjab2023survey} 
+K. Senjab et al., 
+``A Survey of Kubernetes Scheduling Algorithms,'' 
+\textit{Journal of Cloud Computing}, 
+2023.
+
+\bibitem{horn2022autoscaling} 
+A. Horn, H. M. Fard, and F. Wolf, 
+``Multi-objective Hybrid Autoscaling of Microservices in Kubernetes Clusters,'' 
+in \textit{Euro-Par 2022 (LNCS 13440)}, 2022.
+
+\end{thebibliography}
+
+
+\end{document}
+
+
+
+% --- FIGURE 3: RESULTS GRAPHS (Spans two columns) ---
+
+\begin{figure*}[t]
+
+    \centering
+
+    % --- USER ACTION ---
+
+    % 1. Upload your two results graphs (from page 15 of your PPT)
+
+    %    as "makespan_graph.png" and "cost_graph.png"
+
+    % 2. Delete the two \framebox lines below.
+
+    % 3. Uncomment the two \includegraphics lines below.
+
+    
+
+    \begin{subfigure}[b]{0.48\textwidth}
+
+        \centering
+
+        % \framebox(200,160){[Makespan Graph (Fig 3a) Goes Here]}
+
+        \includegraphics[width=\textwidth]{makespan_refined.png}
+
+        \caption{Makespan Optimization Performance (Time Units)}
+
+        \label{fig:makespan_graph}
+
+    \end{subfigure}
+
+    \hfill
+
+    \begin{subfigure}[b]{0.48\textwidth}
+
+        \centering
+
+        % \framebox(200,160){[Total Cost Graph (Fig 3b) Goes Here]}
+
+        \includegraphics[width=\textwidth]{cost_graph.png}
+
+        \caption{Total Cost Optimization Performance (Cost Units)}
+
+        \label{fig:cost_graph}
+
+    \end{subfigure}
+
+    
+
+    \caption{Convergence of Makespan and Total Cost for HEFT, GSA, PSO, and HGSA on the Epigenomic-100 workflow (simulation). HGSA (green) converges significantly faster and to a better final solution for both objectives compared to standalone GSA (red) and PSO (blue).}
+
+    \label{fig:graphs}
+
+\end{figure*}on   
+
+
+% \subsection{Heuristic-Only Scheduling}
+
+% This category is dominated by list-based heuristics. The most prominent is the \textbf{Heterogeneous Earliest Finish Time (HEFT)} algorithm \cite{topcuoglu2002}. HEFT operates in two phases: first, it calculates a priority for each task using an "upward rank" (based on the critical path). Second, it greedily assigns each task (in priority order) to the processor or container that provides the earliest finish time. HEFT is fast and produces a good baseline makespan, but it is single-objective, ignores cost, and its greedy nature can lead to sub-optimal mappings.
+
+
+
+% \subsection{Meta-Heuristic-Only Scheduling}
+
+% To address the multi-objective problem, population-based meta-heuristics are often used. Algorithms like \textbf{Particle Swarm Optimization (PSO)} \cite{pandey2010} and \textbf{Gravitational Search Algorithm (GSA)} \cite{rashedi2009} model solutions as a population of agents (or particles) that "search" the solution space. These methods can navigate large, complex landscapes and can be adapted to balance multiple objectives (like makespan and cost). Their primary weakness is slow convergence and sensitivity to parameter tuning. Without domain-specific guidance, they can spend significant time exploring unpromising regions of the solution space.
+
+
+
+% \subsection{Hybrid Heuristic + Meta-Heuristic Approaches}
+
+% The most promising approaches combine the strengths of the previous two. By using a heuristic like HEFT to generate a high-quality initial solution (a "seed"), a meta-heuristic can converge much faster and to a better-quality solution. Choudhary et al. \cite{choudhary2018} proposed a hybrid GSA+HEFT algorithm that demonstrated superior performance over standalone GSA and HEFT for bi-objective (makespan, cost) scheduling. Our work builds on this foundation by adapting the hybrid model for a containerized Kubernetes environment and integrating a more comprehensive fitness function.

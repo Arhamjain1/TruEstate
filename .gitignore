@@ -1,0 +1,9 @@
+node_modules
+.env
+.DS_Store
+dist
+coverage
+truestate_assignment_dataset.csv
+*.csv
+backend/database.sqlite
+*.sqlite
