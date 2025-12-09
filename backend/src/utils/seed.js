@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const csv = require('csv-parser');
-const AdmZip = require('adm-zip');
+const yauzl = require('yauzl');
 const { db, initDb } = require('./db');
 
 const zipFilePath = path.resolve(__dirname, '../../dataset.zip');
@@ -12,34 +12,44 @@ const importCsv = () => {
 
   console.log(`Checking for dataset...`);
 
-  let csvPath = path.resolve(__dirname, '../../../truestate_assignment_dataset.csv');
-
-  if (fs.existsSync(zipFilePath)) {
-      console.log(`Found zip file at ${zipFilePath}. Extracting to disk...`);
-      const zip = new AdmZip(zipFilePath);
-      const zipEntries = zip.getEntries();
-      const csvEntry = zipEntries.find(entry => entry.entryName === csvFileName || entry.entryName.endsWith('.csv'));
-      
-      if (!csvEntry) {
-          console.error('CSV file not found in zip archive.');
-          return;
-      }
-      
-      // Extract to the same directory as the zip file
-      const outputDir = path.dirname(zipFilePath);
-      zip.extractEntryTo(csvEntry, outputDir, false, true);
-      
-      // The extracted file name (stripped of path)
-      csvPath = path.join(outputDir, csvEntry.name);
-      console.log(`Extracted to ${csvPath}`);
-  } else if (!fs.existsSync(csvPath)) {
-      console.error(`Dataset not found. Looked for ${zipFilePath} and ${csvPath}`);
+  // Check if local CSV exists (dev mode)
+  const localCsvPath = path.resolve(__dirname, '../../../truestate_assignment_dataset.csv');
+  if (fs.existsSync(localCsvPath)) {
+      console.log(`Found local CSV at ${localCsvPath}`);
+      processStream(fs.createReadStream(localCsvPath));
       return;
   }
 
+  if (fs.existsSync(zipFilePath)) {
+      console.log(`Found zip file at ${zipFilePath}. Streaming extraction...`);
+      
+      yauzl.open(zipFilePath, { lazyEntries: true }, (err, zipfile) => {
+          if (err) throw err;
+          
+          zipfile.readEntry();
+          
+          zipfile.on('entry', (entry) => {
+              if (entry.fileName === csvFileName || entry.fileName.endsWith('.csv')) {
+                  console.log(`Found CSV entry: ${entry.fileName}`);
+                  zipfile.openReadStream(entry, (err, readStream) => {
+                      if (err) throw err;
+                      processStream(readStream);
+                  });
+              } else {
+                  zipfile.readEntry();
+              }
+          });
+      });
+  } else {
+      console.error(`Dataset not found. Looked for ${zipFilePath} and ${localCsvPath}`);
+  }
+};
+
+const processStream = (stream) => {
   console.log('Starting stream-based import...');
   
   let rowCount = 0;
+  const BATCH_SIZE = 500; // Smaller batch size for memory safety
 
   db.serialize(() => {
     db.run("BEGIN TRANSACTION");
@@ -52,7 +62,7 @@ const importCsv = () => {
       delivery_type, store_id, store_location, salesperson_id, employee_name
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
 
-    fs.createReadStream(csvPath)
+    stream
       .pipe(csv())
       .on('data', (row) => {
         stmt.run(
@@ -84,18 +94,21 @@ const importCsv = () => {
             row['Employee Name']
         );
         rowCount++;
-        if (rowCount % 5000 === 0) console.log(`Queued ${rowCount} rows...`);
+        if (rowCount % 5000 === 0) {
+            console.log(`Processed ${rowCount} rows...`);
+            // Commit and restart transaction periodically to free memory
+            db.run("COMMIT");
+            db.run("BEGIN TRANSACTION");
+        }
       })
       .on('end', () => {
-        console.log(`Finished parsing ${rowCount} rows. Finalizing transaction...`);
+        console.log(`Finished parsing ${rowCount} rows. Finalizing...`);
         stmt.finalize();
         db.run("COMMIT", (err) => {
             if (err) {
                 console.error("Error committing transaction:", err.message);
             } else {
                 console.log("Import complete.");
-                // Optional: Clean up extracted file to save space
-                // fs.unlinkSync(csvPath); 
             }
         });
       })
