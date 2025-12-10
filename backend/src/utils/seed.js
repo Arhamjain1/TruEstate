@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const csv = require('csv-parser');
 const yauzl = require('yauzl');
+const { Writable } = require('stream');
 const { db, initDb } = require('./db');
 
 const zipFilePath = path.resolve(__dirname, '../../dataset.zip');
@@ -46,10 +47,10 @@ const importCsv = () => {
 };
 
 const processStream = (stream) => {
-  console.log('Starting stream-based import...');
+  console.log('Starting stream-based import with backpressure...');
   
   let rowCount = 0;
-  const BATCH_SIZE = 500; // Smaller batch size for memory safety
+  const BATCH_SIZE = 500; 
 
   db.serialize(() => {
     db.run("BEGIN TRANSACTION");
@@ -62,46 +63,62 @@ const processStream = (stream) => {
       delivery_type, store_id, store_location, salesperson_id, employee_name
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
 
+    // Create a Writable stream to handle backpressure
+    const dbWriter = new Writable({
+        objectMode: true,
+        write(row, encoding, callback) {
+            stmt.run(
+                row['Transaction ID'],
+                row['Date'],
+                row['Customer ID'],
+                row['Customer Name'],
+                row['Phone Number'],
+                row['Gender'],
+                row['Age'],
+                row['Customer Region'],
+                row['Customer Type'],
+                row['Product ID'],
+                row['Product Name'],
+                row['Brand'],
+                row['Product Category'],
+                row['Tags'],
+                row['Quantity'],
+                row['Price per Unit'],
+                row['Discount Percentage'],
+                row['Total Amount'],
+                row['Final Amount'],
+                row['Payment Method'],
+                row['Order Status'],
+                row['Delivery Type'],
+                row['Store ID'],
+                row['Store Location'],
+                row['Salesperson ID'],
+                row['Employee Name'],
+                (err) => {
+                    if (err) return callback(err);
+                    
+                    rowCount++;
+                    if (rowCount % BATCH_SIZE === 0) {
+                        console.log(`Processed ${rowCount} rows...`);
+                        // Commit and restart transaction to free memory
+                        db.run("COMMIT", () => {
+                            db.run("BEGIN TRANSACTION", () => {
+                                // Small delay to allow GC to catch up if needed
+                                setImmediate(callback);
+                            });
+                        });
+                    } else {
+                        callback();
+                    }
+                }
+            );
+        }
+    });
+
     stream
       .pipe(csv())
-      .on('data', (row) => {
-        stmt.run(
-            row['Transaction ID'],
-            row['Date'],
-            row['Customer ID'],
-            row['Customer Name'],
-            row['Phone Number'],
-            row['Gender'],
-            row['Age'],
-            row['Customer Region'],
-            row['Customer Type'],
-            row['Product ID'],
-            row['Product Name'],
-            row['Brand'],
-            row['Product Category'],
-            row['Tags'],
-            row['Quantity'],
-            row['Price per Unit'],
-            row['Discount Percentage'],
-            row['Total Amount'],
-            row['Final Amount'],
-            row['Payment Method'],
-            row['Order Status'],
-            row['Delivery Type'],
-            row['Store ID'],
-            row['Store Location'],
-            row['Salesperson ID'],
-            row['Employee Name']
-        );
-        rowCount++;
-        if (rowCount % 5000 === 0) {
-            console.log(`Processed ${rowCount} rows...`);
-            // Commit and restart transaction periodically to free memory
-            db.run("COMMIT");
-            db.run("BEGIN TRANSACTION");
-        }
-      })
-      .on('end', () => {
+      .pipe(dbWriter)
+      .on('finish', () => {
         console.log(`Finished parsing ${rowCount} rows. Finalizing...`);
         stmt.finalize();
         db.run("COMMIT", (err) => {

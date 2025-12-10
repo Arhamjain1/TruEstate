@@ -4,7 +4,7 @@
   "description": "Backend for Retail Sales Management System",
   "main": "src/index.js",
   "scripts": {
-    "start": "node src/index.js",
+    "start": "node --max-old-space-size=460 src/index.js",
     "dev": "nodemon src/index.js",
     "seed": "node src/utils/seed.js"
   },
